@@ -16,6 +16,8 @@ const assignmentRoutes = require('./routes/assignments');
 const submissionRoutes = require('./routes/submissions');
 const gradingRoutes = require('./routes/grading');
 const rubricRoutes = require('./routes/rubrics');
+const bookmarkRoutes = require('./routes/bookmarks');
+const offlineRoutes = require('./routes/offline');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -62,6 +64,8 @@ app.use('/api/assignments', assignmentRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/grading', gradingRoutes);
 app.use('/api/rubrics', rubricRoutes);
+app.use('/api/bookmarks', bookmarkRoutes);
+app.use('/api/offline', offlineRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

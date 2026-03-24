@@ -62,6 +62,175 @@ router.get('/course/:courseId', auth, async (req, res) => {
   }
 });
 
+// Search content
+router.get('/search', auth, async (req, res) => {
+  try {
+    const { q, type, difficulty, tags, page = 1, limit = 20 } = req.query;
+    
+    let query = { isPublished: true };
+    
+    if (q) {
+      query.$text = { $search: q };
+    }
+    
+    if (type) {
+      query.type = type;
+    }
+    
+    if (difficulty) {
+      query['metadata.difficulty'] = difficulty;
+    }
+    
+    if (tags) {
+      const tagArray = tags.split(',').map(tag => tag.trim());
+      query['metadata.tags'] = { $in: tagArray };
+    }
+    
+    const skip = (page - 1) * limit;
+    
+    const content = await Content.find(query)
+      .populate('course', 'title')
+      .populate('module', 'title')
+      .sort({ viewCount: -1, averageRating: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Content.countDocuments(query);
+    
+    res.json({
+      content,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error searching content:', error);
+    res.status(500).json({ error: 'Failed to search content' });
+  }
+});
+
+// Get content recommendations based on user progress
+router.get('/recommendations/:userId', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 10 } = req.query;
+    
+    // Get user's completed content and interests
+    const userProgress = await Progress.find({ user: userId, completed: true })
+      .populate({
+        path: 'content',
+        populate: [
+          { path: 'course', select: 'title metadata.tags' },
+          { path: 'module', select: 'title' }
+        ]
+      });
+    
+    // Extract tags and types from completed content
+    const userTags = new Set();
+    const userTypes = new Set();
+    
+    userProgress.forEach(progress => {
+      if (progress.content.metadata.tags) {
+        progress.content.metadata.tags.forEach(tag => userTags.add(tag));
+      }
+      userTypes.add(progress.content.type);
+    });
+    
+    // Find similar content
+    const recommendations = await Content.find({
+      isPublished: true,
+      _id: { $nin: userProgress.map(p => p.content._id) },
+      $or: [
+        { 'metadata.tags': { $in: Array.from(userTags) } },
+        { type: { $in: Array.from(userTypes) } }
+      ]
+    })
+    .populate('course', 'title')
+    .populate('module', 'title')
+    .sort({ averageRating: -1, viewCount: -1 })
+    .limit(parseInt(limit));
+    
+    res.json(recommendations);
+  } catch (error) {
+    console.error('Error getting recommendations:', error);
+    res.status(500).json({ error: 'Failed to get recommendations' });
+  }
+});
+
+// Get content analytics
+router.get('/:id/analytics', auth, async (req, res) => {
+  try {
+    const content = await Content.findById(req.params.id)
+      .populate('course', 'title instructor');
+    
+    if (!content) {
+      return res.status(404).json({ error: 'Content not found' });
+    }
+    
+    // Check if user has permission (instructor or admin)
+    if (content.course.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Permission denied' });
+    }
+    
+    // Get progress analytics
+    const progressStats = await Progress.aggregate([
+      { $match: { content: content._id } },
+      {
+        $group: {
+          _id: null,
+          totalViews: { $sum: 1 },
+          completedViews: { $sum: { $cond: ['$completed', 1, 0] } },
+          averageCompletionTime: { $avg: '$timeSpent' },
+          averageWatchTime: { $avg: '$watchTime' }
+        }
+      }
+    ]);
+    
+    // Get daily views for the last 30 days
+    const dailyViews = await Progress.aggregate([
+      {
+        $match: {
+          content: content._id,
+          createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' }
+          },
+          views: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } }
+    ]);
+    
+    res.json({
+      content: {
+        id: content._id,
+        title: content.title,
+        type: content.type,
+        viewCount: content.viewCount,
+        completionCount: content.completionCount,
+        averageRating: content.averageRating
+      },
+      analytics: {
+        ...progressStats[0],
+        completionRate: progressStats[0] ? (progressStats[0].completedViews / progressStats[0].totalViews) * 100 : 0,
+        dailyViews
+      }
+    });
+  } catch (error) {
+    console.error('Error getting content analytics:', error);
+    res.status(500).json({ error: 'Failed to get analytics' });
+  }
+});
+
 // Get single content by ID
 router.get('/:id', auth, async (req, res) => {
   try {
